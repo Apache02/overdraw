@@ -1,0 +1,10 @@
+[workspace]
+# Resolver 3 picks dependency versions that still build with `rust-version`.
+resolver = "3"
+members = ["crates/overdraw-core", "crates/overdraw"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.84"
+license = "MIT"

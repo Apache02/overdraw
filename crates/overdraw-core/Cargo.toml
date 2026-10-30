@@ -1,0 +1,9 @@
+[package]
+name = "overdraw-core"
+description = "Model and geometry for overdraw, independent of any GUI toolkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=overdraw
+GenericName=Screen annotation
+Comment=Draw on top of the screen
+Exec=overdraw
+Icon=applications-graphics
+Terminal=false
+Categories=Graphics;Utility;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

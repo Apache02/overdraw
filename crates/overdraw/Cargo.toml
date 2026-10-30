@@ -1,0 +1,11 @@
+[package]
+name = "overdraw"
+description = "Draw on top of the screen (X11, GTK3)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+overdraw-core = { path = "../overdraw-core" }
+gtk = "0.18"
