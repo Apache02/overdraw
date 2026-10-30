@@ -116,6 +116,16 @@ impl Shape {
         }
     }
 
+    /// Changes the width setting, rescaling text and badges the same way the tools size them.
+    pub fn set_width(&mut self, width: f64) {
+        self.width = width;
+        match &mut self.kind {
+            ShapeKind::Text { size, .. } => *size = text_size_for_width(width),
+            ShapeKind::Badge { radius, .. } => *radius = badge_radius_for_width(width),
+            _ => {}
+        }
+    }
+
     /// Whether `p` touches the shape, with `tolerance` extra pixels of slack.
     pub fn hit(&self, p: Point, tolerance: f64) -> bool {
         let reach = tolerance + self.stroke_width() / 2.0;
@@ -186,6 +196,8 @@ pub struct Document {
     undo: Vec<Vec<Shape>>,
     redo: Vec<Vec<Shape>>,
     erase_start: Option<Vec<Shape>>,
+    /// Set while consecutive resizes of the last shape share one undo step.
+    resizing: bool,
 }
 
 impl Document {
@@ -200,6 +212,7 @@ impl Document {
     fn checkpoint(&mut self, before: Vec<Shape>) {
         self.undo.push(before);
         self.redo.clear();
+        self.resizing = false;
     }
 
     pub fn add(&mut self, shape: Shape) {
@@ -236,7 +249,25 @@ impl Document {
         }
     }
 
+    /// Sets the width of the most recently added shape. A run of resizes with
+    /// nothing else in between is one undo step.
+    pub fn set_last_width(&mut self, width: f64) -> bool {
+        match self.shapes.last() {
+            Some(last) if last.width != width => {}
+            _ => return false,
+        }
+        if !self.resizing {
+            self.checkpoint(self.shapes.clone());
+            self.resizing = true;
+        }
+        if let Some(last) = self.shapes.last_mut() {
+            last.set_width(width);
+        }
+        true
+    }
+
     pub fn undo(&mut self) -> bool {
+        self.resizing = false;
         match self.undo.pop() {
             Some(prev) => {
                 self.redo.push(std::mem::replace(&mut self.shapes, prev));
@@ -247,6 +278,7 @@ impl Document {
     }
 
     pub fn redo(&mut self) -> bool {
+        self.resizing = false;
         match self.redo.pop() {
             Some(next) => {
                 self.undo.push(std::mem::replace(&mut self.shapes, next));
@@ -355,6 +387,35 @@ mod tests {
         doc.add(badge(1));
         doc.add(badge(4));
         assert_eq!(doc.next_badge_number(), 5);
+    }
+
+    #[test]
+    fn resizing_last_shape_is_one_undo_step() {
+        let mut doc = Document::new();
+        doc.add(line(0.0));
+        doc.add(badge(1));
+        assert!(doc.set_last_width(6.0));
+        assert!(doc.set_last_width(8.0));
+        assert!(!doc.set_last_width(8.0), "same width is no change");
+        let last = &doc.shapes()[1];
+        assert_eq!(last.width, 8.0);
+        assert!(matches!(last.kind, ShapeKind::Badge { radius, .. } if radius == badge_radius_for_width(8.0)));
+        assert_eq!(doc.shapes()[0].width, 4.0, "only the last shape changes");
+        doc.undo();
+        assert_eq!(doc.shapes()[1], badge(1));
+        doc.undo();
+        assert_eq!(doc.shapes().len(), 1);
+    }
+
+    #[test]
+    fn resizing_after_undo_starts_a_new_step() {
+        let mut doc = Document::new();
+        doc.add(line(0.0));
+        doc.set_last_width(6.0);
+        doc.undo();
+        doc.set_last_width(10.0);
+        doc.undo();
+        assert_eq!(doc.shapes(), &[line(0.0)]);
     }
 
     #[test]

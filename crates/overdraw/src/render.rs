@@ -5,6 +5,7 @@ use overdraw_core::geometry::{arrow_head, rect_from_corners, Point};
 use overdraw_core::model::{Color, Shape, ShapeKind, HIGHLIGHTER_ALPHA};
 
 const FONT: &str = "Sans";
+const BADGE_ALPHA: f64 = 0.8;
 
 fn set_color(cr: &Context, c: Color, alpha: f64) {
     cr.set_source_rgba(c.r, c.g, c.b, alpha);
@@ -74,6 +75,8 @@ pub fn draw_shape(cr: &Context, shape: &Shape) {
         }
         ShapeKind::Text { origin, text, size } => draw_text(cr, *origin, text, *size),
         ShapeKind::Badge { center, number, radius } => {
+            // Drawn as a group so the number does not let the circle show through.
+            cr.push_group();
             cr.arc(center.x, center.y, *radius, 0.0, std::f64::consts::TAU);
             let _ = cr.fill();
             let c = shape.color;
@@ -89,6 +92,9 @@ pub fn draw_shape(cr: &Context, shape: &Shape) {
                     center.y - ext.height() / 2.0 - ext.y_bearing(),
                 );
                 let _ = cr.show_text(&label);
+            }
+            if cr.pop_group_to_source().is_ok() {
+                let _ = cr.paint_with_alpha(BADGE_ALPHA);
             }
         }
     }

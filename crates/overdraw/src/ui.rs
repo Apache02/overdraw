@@ -24,6 +24,8 @@ pub struct Ui {
     color_buttons: Vec<gtk::RadioButton>,
     width_scale: gtk::Scale,
     palette_placed: Cell<bool>,
+    /// Smooth-scroll distance not yet turned into a width step.
+    scroll_rest: Cell<f64>,
 }
 
 fn tool_label(tool: Tool) -> (&'static str, &'static str) {
@@ -40,6 +42,41 @@ fn tool_label(tool: Tool) -> (&'static str, &'static str) {
     }
 }
 
+/// Edge length of a tool icon on the palette, in logical pixels.
+const TOOL_ICON_SIZE: i32 = 20;
+
+fn tool_icon_svg(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Pen => include_str!("../../../data/icons/pen.svg"),
+        Tool::Highlighter => include_str!("../../../data/icons/highlighter.svg"),
+        Tool::Line => include_str!("../../../data/icons/line.svg"),
+        Tool::Arrow => include_str!("../../../data/icons/arrow.svg"),
+        Tool::Rect => include_str!("../../../data/icons/rectangle.svg"),
+        Tool::Ellipse => include_str!("../../../data/icons/ellipse.svg"),
+        Tool::Text => include_str!("../../../data/icons/text.svg"),
+        Tool::Badge => include_str!("../../../data/icons/badge.svg"),
+        Tool::Eraser => include_str!("../../../data/icons/eraser.svg"),
+    }
+}
+
+/// Rasterizes a tool icon for the dark palette. The SVGs are drawn black on
+/// white, so the two colors are swapped: black becomes the glyph color and
+/// white becomes the palette background.
+fn tool_icon(tool: Tool) -> Option<gtk::gdk_pixbuf::Pixbuf> {
+    let svg = tool_icon_svg(tool)
+        .replace("\"white\"", "\"#1c1c1e\"")
+        .replace("\"black\"", "\"#ffffff\"");
+    let loader = gtk::gdk_pixbuf::PixbufLoader::with_type("svg").ok()?;
+    loader.set_size(TOOL_ICON_SIZE, TOOL_ICON_SIZE);
+    let written = loader.write(svg.as_bytes());
+    let closed = loader.close();
+    if let Err(e) = written.and(closed) {
+        eprintln!("overdraw: can't load {tool:?} icon: {e}");
+        return None;
+    }
+    loader.pixbuf()
+}
+
 fn hex(c: overdraw_core::Color) -> String {
     let byte = |v: f64| (v * 255.0).round() as u8;
     format!("#{:02x}{:02x}{:02x}", byte(c.r), byte(c.g), byte(c.b))
@@ -51,10 +88,13 @@ fn install_css() {
          .overdraw-palette button { min-width: 30px; min-height: 30px; padding: 0 4px;
              color: #fff; font-size: 16px; background: none; border: none; box-shadow: none;
              border-radius: 8px; }
-         .overdraw-palette button:checked { background-color: rgba(255,255,255,0.25); }
+         .overdraw-palette button:not(.swatch):hover { background-color: rgba(255,255,255,0.12); }
+         .overdraw-palette button:checked,
+         .overdraw-palette button:not(.swatch):checked:hover { background-color: rgba(255,255,255,0.25); }
          .overdraw-palette .grip { color: rgba(255,255,255,0.5); padding: 0 6px; }
          .overdraw-palette .swatch { min-width: 18px; min-height: 18px; padding: 0;
              border-radius: 50%; border: 2px solid rgba(255,255,255,0.2); }
+         .overdraw-palette .swatch:hover { border-color: rgba(255,255,255,0.6); }
          .overdraw-palette .swatch:checked { border-color: #fff; }
          .overdraw-palette scale { min-width: 110px; }\n",
     );
@@ -122,7 +162,9 @@ impl Ui {
         area.add_events(
             EventMask::BUTTON_PRESS_MASK
                 | EventMask::BUTTON_RELEASE_MASK
-                | EventMask::POINTER_MOTION_MASK,
+                | EventMask::POINTER_MOTION_MASK
+                | EventMask::SCROLL_MASK
+                | EventMask::SMOOTH_SCROLL_MASK,
         );
         overlay.add(&area);
 
@@ -158,7 +200,13 @@ impl Ui {
         for tool in Tool::ALL {
             let b = radio(first.as_ref());
             let (glyph, name) = tool_label(tool);
-            b.set_label(glyph);
+            match tool_icon(tool) {
+                Some(pixbuf) => {
+                    b.set_image(Some(&gtk::Image::from_pixbuf(Some(&pixbuf))));
+                    b.set_always_show_image(true);
+                }
+                None => b.set_label(glyph),
+            }
             b.set_tooltip_text(Some(&format!("{name} ({})", tool.shortcut().to_ascii_uppercase())));
             row.pack_start(&b, false, false, 0);
             first.get_or_insert_with(|| b.clone());
@@ -199,6 +247,7 @@ impl Ui {
             color_buttons,
             width_scale,
             palette_placed: Cell::new(false),
+            scroll_rest: Cell::new(0.0),
         });
         ui.width_scale.set_value(ui.state.borrow().width);
         Ui::connect(&ui, &grip);
@@ -242,6 +291,12 @@ impl Ui {
                 s.motion(Point::new(x, y), ev.state().contains(ModifierType::SHIFT_MASK));
                 u.area.queue_draw();
             }
+            Propagation::Stop
+        });
+
+        let u = ui.clone();
+        ui.area.connect_scroll_event(move |_, ev| {
+            u.on_scroll(ev);
             Propagation::Stop
         });
 
@@ -318,6 +373,33 @@ impl Ui {
         }
         if let Some(shape) = s.text_preview() {
             render::draw_text_edit(cr, &shape);
+        }
+    }
+
+    /// Scrolling up widens the tool, with Ctrl it widens the last shape instead.
+    fn on_scroll(&self, ev: &gdk::EventScroll) {
+        let steps = match ev.direction() {
+            gdk::ScrollDirection::Up => 1,
+            gdk::ScrollDirection::Down => -1,
+            gdk::ScrollDirection::Smooth => {
+                // Touchpads send fractions of a notch; act once a whole one has built up.
+                let total = self.scroll_rest.get() - ev.delta().1;
+                let whole = total.trunc();
+                self.scroll_rest.set(total - whole);
+                whole as i32
+            }
+            _ => 0,
+        };
+        if steps == 0 {
+            return;
+        }
+        let delta = steps as f64 * WIDTH_STEP;
+        if ev.state().contains(ModifierType::CONTROL_MASK) {
+            if self.state.borrow_mut().resize_last(delta) {
+                self.area.queue_draw();
+            }
+        } else {
+            self.width_scale.set_value(self.width_scale.value() + delta);
         }
     }
 

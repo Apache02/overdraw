@@ -61,6 +61,13 @@ impl State {
         self.width = width.clamp(MIN_WIDTH, MAX_WIDTH);
     }
 
+    /// Grows or shrinks the last drawn shape by `delta` of width, within the width limits.
+    pub fn resize_last(&mut self, delta: f64) -> bool {
+        let Some(last) = self.doc.shapes().last() else { return false };
+        let width = (last.width + delta).clamp(MIN_WIDTH, MAX_WIDTH);
+        self.doc.set_last_width(width)
+    }
+
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
     }
@@ -211,6 +218,18 @@ mod tests {
         assert!(s.text.is_some(), "second click starts a new text");
         s.commit_text();
         assert_eq!(s.doc.shapes().len(), 1, "empty text is dropped");
+    }
+
+    #[test]
+    fn resize_last_stays_within_limits() {
+        let mut s = State::default();
+        assert!(!s.resize_last(2.0), "nothing to resize");
+        s.press(Point::new(0.0, 0.0), false, false);
+        s.release();
+        assert!(s.resize_last(100.0));
+        assert_eq!(s.doc.shapes()[0].width, MAX_WIDTH);
+        assert!(!s.resize_last(2.0));
+        assert_eq!(s.width, 4.0, "the tool width is untouched");
     }
 
     #[test]
