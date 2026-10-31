@@ -38,6 +38,7 @@ command `overdraw --toggle`, keys e.g. <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kb
 
 ```bash
 install -Dm755 target/release/overdraw ~/.local/bin/overdraw
+install -Dm644 data/icons/overdraw-rs.svg ~/.local/share/icons/hicolor/scalable/apps/overdraw-rs.svg
 install -Dm644 data/overdraw.desktop ~/.local/share/applications/overdraw.desktop
 install -Dm644 data/overdraw.desktop ~/.config/autostart/overdraw.desktop   # autostart
 ```
@@ -77,3 +78,7 @@ Pick the level, or turn it off, under **Dim Screen** in the tray icon's menu.
 Selection tool (move, recolor), curved arrows, auto-fading drawings,
 a separate canvas per monitor (the canvas currently covers the
 primary monitor), Wayland.
+
+## License
+
+[MIT](LICENSE)

@@ -66,15 +66,42 @@ fn tool_icon(tool: Tool) -> Option<gtk::gdk_pixbuf::Pixbuf> {
     let svg = tool_icon_svg(tool)
         .replace("\"white\"", "\"#1c1c1e\"")
         .replace("\"black\"", "\"#ffffff\"");
+    svg_pixbuf(&svg, TOOL_ICON_SIZE)
+}
+
+const APP_ICON_SVG: &str = include_str!("../../../data/icons/overdraw-rs.svg");
+const STATUS_ICON_SVG: &str = include_str!("../../../data/icons/overdraw-rs-status.svg");
+/// Theme icon used when the tray icon file can't be written.
+const FALLBACK_STATUS_ICON: &str = "applications-graphics";
+
+fn svg_pixbuf(svg: &str, size: i32) -> Option<gtk::gdk_pixbuf::Pixbuf> {
     let loader = gtk::gdk_pixbuf::PixbufLoader::with_type("svg").ok()?;
-    loader.set_size(TOOL_ICON_SIZE, TOOL_ICON_SIZE);
+    loader.set_size(size, size);
     let written = loader.write(svg.as_bytes());
     let closed = loader.close();
     if let Err(e) = written.and(closed) {
-        eprintln!("overdraw: can't load {tool:?} icon: {e}");
+        eprintln!("overdraw: can't load icon: {e}");
         return None;
     }
     loader.pixbuf()
+}
+
+/// XAppStatusIcon accepts a file path as well as a theme icon name. The SVG is
+/// embedded and written out at startup, so the tray icon works without installing
+/// anything into the icon theme.
+fn status_icon() -> String {
+    let path = glib::user_runtime_dir().join("overdraw").join("overdraw-rs-status.svg");
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, STATUS_ICON_SVG));
+    match written {
+        Ok(()) => path.to_string_lossy().into_owned(),
+        Err(e) => {
+            eprintln!("overdraw: can't write tray icon {}: {e}", path.display());
+            FALLBACK_STATUS_ICON.to_string()
+        }
+    }
 }
 
 fn hex(c: overdraw_core::Color) -> String {
@@ -118,6 +145,29 @@ fn install_css() {
     }
 }
 
+/// Created once and hidden on close, so opening it twice does not stack windows.
+fn about_dialog() -> gtk::AboutDialog {
+    let dialog = gtk::AboutDialog::builder()
+        .program_name("overdraw")
+        .version(env!("CARGO_PKG_VERSION"))
+        .comments(env!("CARGO_PKG_DESCRIPTION"))
+        .website(env!("CARGO_PKG_REPOSITORY"))
+        .website_label("Source code on GitHub")
+        .license_type(gtk::License::MitX11)
+        .authors(["Aleksey Priymachuk"])
+        .build();
+    dialog.set_keep_above(true);
+    if let Some(logo) = svg_pixbuf(APP_ICON_SVG, 128) {
+        dialog.set_logo(Some(&logo));
+    }
+    dialog.connect_response(|d, _| d.hide());
+    dialog.connect_delete_event(|d, _| {
+        d.hide();
+        Propagation::Stop
+    });
+    dialog
+}
+
 fn use_rgba_visual(win: &gtk::Window) {
     if let Some(visual) = WidgetExt::screen(win).and_then(|s| s.rgba_visual()) {
         win.set_visual(Some(&visual));
@@ -146,6 +196,9 @@ fn radio(group: Option<&gtk::RadioButton>) -> gtk::RadioButton {
 impl Ui {
     pub fn new(app: &gtk::Application) -> Rc<Ui> {
         install_css();
+        if let Some(icon) = svg_pixbuf(APP_ICON_SVG, 128) {
+            gtk::Window::set_default_icon(&icon);
+        }
 
         let overlay = gtk::Window::new(gtk::WindowType::Toplevel);
         overlay.set_application(Some(app));
@@ -550,12 +603,14 @@ impl Ui {
         let draw = gtk::MenuItem::with_label("Draw on Screen");
         let clear = gtk::MenuItem::with_label("Clear");
         let dim = gtk::MenuItem::with_label("Dim Screen");
+        let about = gtk::MenuItem::with_label("About…");
         let quit = gtk::MenuItem::with_label("Quit");
         dim.set_submenu(Some(&Ui::dim_menu(ui)));
         menu.append(&draw);
         menu.append(&clear);
         menu.append(&dim);
         menu.append(&gtk::SeparatorMenuItem::new());
+        menu.append(&about);
         menu.append(&quit);
         menu.show_all();
 
@@ -566,6 +621,8 @@ impl Ui {
             u.state.borrow_mut().doc.clear();
             u.area.queue_draw();
         });
+        let about_dialog = about_dialog();
+        about.connect_activate(move |_| about_dialog.present());
         let app = ui.app.clone();
         quit.connect_activate(move |_| app.quit());
 
@@ -573,7 +630,7 @@ impl Ui {
         // primary menu a left click emits "activate" instead.
         let icon = tray::new_status_icon(
             "overdraw",
-            "applications-graphics",
+            &status_icon(),
             "overdraw — draw on screen",
             &menu,
         );
