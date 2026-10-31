@@ -1,6 +1,8 @@
 //! Cairo rendering of shapes.
 
-use gtk::cairo::{Context, FontSlant, FontWeight, LineCap, LineJoin};
+use gtk::cairo::{Context, FontSlant, FontWeight, Format, ImageSurface, LineCap, LineJoin};
+use gtk::gdk::prelude::GdkContextExt;
+use gtk::gdk_pixbuf::Pixbuf;
 use overdraw_core::geometry::{arrow_head, rect_from_corners, Point};
 use overdraw_core::model::{Color, Shape, ShapeKind, HIGHLIGHTER_ALPHA};
 
@@ -100,6 +102,28 @@ pub fn draw_shape(cr: &Context, shape: &Shape) {
     }
 }
 
+/// Draws `shapes` over a screen capture. `width` × `height` is the logical size the
+/// shapes were drawn at; the capture may be larger on a HiDPI screen.
+pub fn compose(
+    background: &Pixbuf,
+    width: i32,
+    height: i32,
+    shapes: &[Shape],
+) -> Option<ImageSurface> {
+    let (pw, ph) = (background.width(), background.height());
+    let surface = ImageSurface::create(Format::Rgb24, pw, ph).ok()?;
+    {
+        let cr = Context::new(&surface).ok()?;
+        cr.set_source_pixbuf(background, 0.0, 0.0);
+        cr.paint().ok()?;
+        cr.scale(f64::from(pw) / f64::from(width), f64::from(ph) / f64::from(height));
+        for shape in shapes {
+            draw_shape(&cr, shape);
+        }
+    }
+    Some(surface)
+}
+
 /// Text being typed, with a caret after it.
 pub fn draw_text_edit(cr: &Context, shape: &Shape) {
     draw_shape(cr, shape);
@@ -110,5 +134,38 @@ pub fn draw_text_edit(cr: &Context, shape: &Shape) {
         cr.set_line_width(2.0);
         polyline(cr, &[Point::new(x, origin.y + size * 0.1), Point::new(x, origin.y + size * 1.2)]);
         let _ = cr.stroke();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gtk::gdk_pixbuf::Colorspace;
+    use overdraw_core::PALETTE;
+
+    /// RGB of a pixel; Rgb24 surfaces store each one as a native-endian 0xXXRRGGBB word.
+    fn pixel(s: &mut ImageSurface, x: i32, y: i32) -> [u8; 3] {
+        let stride = s.stride();
+        let data = s.data().unwrap();
+        let i = (y * stride + x * 4) as usize;
+        let word = u32::from_ne_bytes(data[i..i + 4].try_into().unwrap());
+        [(word >> 16) as u8, (word >> 8) as u8, word as u8]
+    }
+
+    #[test]
+    fn compose_draws_shapes_scaled_over_background() {
+        // A 2x capture of a 50x50 logical area, with a red line across the middle.
+        let bg = Pixbuf::new(Colorspace::Rgb, false, 8, 100, 100).unwrap();
+        bg.fill(0x000000ff);
+        let line = Shape {
+            kind: ShapeKind::Line(Point::new(0.0, 25.0), Point::new(50.0, 25.0)),
+            color: PALETTE[0],
+            width: 4.0,
+            highlighter: false,
+        };
+        let mut shot = compose(&bg, 50, 50, &[line]).unwrap();
+        assert_eq!((shot.width(), shot.height()), (100, 100));
+        assert_eq!(pixel(&mut shot, 50, 50), [0xff, 0x3b, 0x30], "line lands at 2x");
+        assert_eq!(pixel(&mut shot, 50, 10), [0, 0, 0], "background kept");
     }
 }

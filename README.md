@@ -53,6 +53,7 @@ install -Dm644 data/overdraw.desktop ~/.config/autostart/overdraw.desktop   # au
 | 1–9 | Color |
 | [ / ] | Thinner / Thicker |
 | C | Clear all |
+| S | Screenshot with the drawing: copied to the clipboard, then a Save dialog opens |
 | Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) | Undo / Redo |
 | Esc | Cancel the current gesture, or hide the canvas |
 | Hold Shift | Constrain lines to 45°, shapes to squares and circles |

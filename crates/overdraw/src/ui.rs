@@ -3,6 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gtk::gdk::{self, keys::constants as key, EventMask, ModifierType};
 use gtk::glib::{self, Propagation};
@@ -59,11 +60,15 @@ fn tool_icon_svg(tool: Tool) -> &'static str {
     }
 }
 
-/// Rasterizes a tool icon for the dark palette. The SVGs are drawn black on
+const SCREENSHOT_ICON_SVG: &str = include_str!("../../../data/icons/screenshot.svg");
+/// Time for the compositor to take the hidden canvas off the screen before capturing.
+const SCREENSHOT_DELAY: Duration = Duration::from_millis(300);
+
+/// Rasterizes a palette icon for the dark palette. The SVGs are drawn black on
 /// white, so the two colors are swapped: black becomes the glyph color and
 /// white becomes the palette background.
-fn tool_icon(tool: Tool) -> Option<gtk::gdk_pixbuf::Pixbuf> {
-    let svg = tool_icon_svg(tool)
+fn palette_icon(svg: &str) -> Option<gtk::gdk_pixbuf::Pixbuf> {
+    let svg = svg
         .replace("\"white\"", "\"#1c1c1e\"")
         .replace("\"black\"", "\"#ffffff\"");
     svg_pixbuf(&svg, TOOL_ICON_SIZE)
@@ -253,7 +258,7 @@ impl Ui {
         for tool in Tool::ALL {
             let b = radio(first.as_ref());
             let (glyph, name) = tool_label(tool);
-            match tool_icon(tool) {
+            match palette_icon(tool_icon_svg(tool)) {
                 Some(pixbuf) => {
                     b.set_image(Some(&gtk::Image::from_pixbuf(Some(&pixbuf))));
                     b.set_always_show_image(true);
@@ -288,6 +293,20 @@ impl Ui {
         width_scale.set_tooltip_text(Some("Width ( [ and ] )"));
         row.pack_start(&width_scale, false, false, 0);
 
+        row.pack_start(&gtk::Separator::new(gtk::Orientation::Vertical), false, false, 6);
+
+        let screenshot = gtk::Button::new();
+        match palette_icon(SCREENSHOT_ICON_SVG) {
+            Some(pixbuf) => {
+                screenshot.set_image(Some(&gtk::Image::from_pixbuf(Some(&pixbuf))));
+                screenshot.set_always_show_image(true);
+            }
+            None => screenshot.set_label("📷"),
+        }
+        screenshot.set_can_focus(false);
+        screenshot.set_tooltip_text(Some("Screenshot with drawing (S)"));
+        row.pack_start(&screenshot, false, false, 0);
+
         palette.add(&row);
 
         let ui = Rc::new(Ui {
@@ -303,11 +322,14 @@ impl Ui {
             scroll_rest: Cell::new(0.0),
         });
         ui.width_scale.set_value(ui.state.borrow().width);
-        Ui::connect(&ui, &grip);
+        Ui::connect(&ui, &grip, &screenshot);
         ui
     }
 
-    fn connect(ui: &Rc<Ui>, grip: &gtk::EventBox) {
+    fn connect(ui: &Rc<Ui>, grip: &gtk::EventBox, screenshot: &gtk::Button) {
+        let u = ui.clone();
+        screenshot.connect_clicked(move |_| u.take_screenshot());
+
         ui.overlay.connect_realize(|w| {
             let cursor = gdk::Cursor::for_display(&w.display(), gdk::CursorType::Crosshair);
             if let (Some(win), Some(cursor)) = (w.window(), cursor) {
@@ -456,7 +478,86 @@ impl Ui {
         }
     }
 
-    fn on_key(&self, ev: &gdk::EventKey) -> Propagation {
+    /// Captures the screen under the canvas with the drawing on top (without the
+    /// dimming), saves it to Pictures and copies it to the clipboard.
+    fn take_screenshot(self: &Rc<Self>) {
+        let Some(win) = self.overlay.window().filter(|_| self.is_shown()) else { return };
+        {
+            let mut s = self.state.borrow_mut();
+            s.cancel_drag();
+            s.commit_text();
+        }
+        let (_, x, y) = win.origin();
+        let (w, h) = (win.width(), win.height());
+        // Both windows are hidden so the capture shows only what is under them.
+        self.palette.hide();
+        self.overlay.hide();
+        let u = self.clone();
+        glib::timeout_add_local_once(SCREENSHOT_DELAY, move || {
+            let shot = gdk::Screen::default()
+                .and_then(|screen| screen.root_window())
+                .and_then(|root| root.pixbuf(x, y, w, h))
+                .and_then(|bg| render::compose(&bg, w, h, u.state.borrow().doc.shapes()))
+                .and_then(|s| gdk::pixbuf_get_from_surface(&s, 0, 0, s.width(), s.height()));
+            u.show();
+            match shot {
+                Some(pixbuf) => u.save_screenshot(&pixbuf),
+                None => eprintln!("overdraw: can't capture the screen"),
+            }
+        });
+    }
+
+    /// Copies the screenshot to the clipboard and asks where to save it.
+    fn save_screenshot(&self, pixbuf: &gtk::gdk_pixbuf::Pixbuf) {
+        gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_image(pixbuf);
+
+        let dialog = gtk::FileChooserDialog::with_buttons(
+            Some("Save Screenshot"),
+            Some(&self.overlay),
+            gtk::FileChooserAction::Save,
+            &[("_Cancel", gtk::ResponseType::Cancel), ("_Save", gtk::ResponseType::Accept)],
+        );
+        dialog.set_default_response(gtk::ResponseType::Accept);
+        dialog.set_do_overwrite_confirmation(true);
+        // The canvas stays on top, so the dialog has to as well.
+        dialog.set_keep_above(true);
+        let dir = glib::user_special_dir(glib::UserDirectory::Pictures)
+            .unwrap_or_else(glib::home_dir);
+        dialog.set_current_folder(&dir);
+        let stamp = glib::DateTime::now_local()
+            .and_then(|t| t.format("%Y-%m-%d %H-%M-%S"))
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        dialog.set_current_name(&format!("overdraw {stamp}.png"));
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("PNG images"));
+        filter.add_mime_type("image/png");
+        dialog.add_filter(filter);
+
+        let (pixbuf, overlay) = (pixbuf.clone(), self.overlay.clone());
+        dialog.connect_response(move |d, response| {
+            let path = d.filename().filter(|_| response == gtk::ResponseType::Accept);
+            d.close();
+            let Some(path) = path else { return };
+            if let Err(e) = pixbuf.savev(&path, "png", &[]) {
+                let msg = gtk::MessageDialog::new(
+                    Some(&overlay),
+                    gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+                    gtk::MessageType::Error,
+                    gtk::ButtonsType::Close,
+                    &format!("Can't save {}", path.display()),
+                );
+                msg.set_secondary_text(Some(&e.to_string()));
+                msg.set_keep_above(true);
+                msg.connect_response(|m, _| m.close());
+                msg.show();
+            }
+        });
+        // After show() hands focus back to the canvas, which it also does on idle.
+        glib::idle_add_local_once(move || dialog.present());
+    }
+
+    fn on_key(self: &Rc<Self>, ev: &gdk::EventKey) -> Propagation {
         let k = ev.keyval();
         let m = ev.state();
         let ctrl = m.contains(ModifierType::CONTROL_MASK);
@@ -525,6 +626,7 @@ impl Ui {
                 self.state.borrow_mut().doc.clear();
                 self.area.queue_draw();
             }
+            Some('s') => self.take_screenshot(),
             _ => return Propagation::Proceed,
         }
         Propagation::Stop
