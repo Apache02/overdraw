@@ -4,6 +4,8 @@
 use overdraw_core::model::{
     badge_radius_for_width, text_size_for_width, two_point_shape, Shape, ShapeKind,
 };
+use std::time::{Duration, Instant};
+
 use overdraw_core::{Document, Point, Tool, PALETTE};
 
 pub const MIN_WIDTH: f64 = 1.0;
@@ -39,6 +41,21 @@ impl Background {
     }
 }
 const ERASER_TOLERANCE: f64 = 6.0;
+/// How long a fading shape stays fully visible, then how long it takes to vanish.
+pub const FADE_HOLD: Duration = Duration::from_millis(1500);
+pub const FADE_OUT: Duration = Duration::from_millis(1000);
+
+/// Opacity of a fading shape of the given age, or `None` once it is gone.
+pub fn fade_alpha(age: Duration) -> Option<f64> {
+    let fading_for = age.checked_sub(FADE_HOLD).unwrap_or_default();
+    (fading_for < FADE_OUT).then(|| 1.0 - fading_for.as_secs_f64() / FADE_OUT.as_secs_f64())
+}
+
+/// A shape drawn in fading mode. It is kept out of the document and its undo history.
+struct FadingShape {
+    shape: Shape,
+    born: Instant,
+}
 
 struct Drag {
     tool: Tool,
@@ -64,6 +81,9 @@ pub struct State {
     pub background_opacity: f64,
     /// Mouse clicks go through the canvas to the windows under it; the drawing stays.
     pub pass_through: bool,
+    /// New shapes fade away after a moment instead of staying.
+    pub fading_mode: bool,
+    fading: Vec<FadingShape>,
     drag: Option<Drag>,
     pub text: Option<TextEdit>,
 }
@@ -78,6 +98,8 @@ impl Default for State {
             background: Background::Black,
             background_opacity: DEFAULT_BACKGROUND_OPACITY,
             pass_through: false,
+            fading_mode: false,
+            fading: Vec::new(),
             drag: None,
             text: None,
         }
@@ -98,6 +120,51 @@ impl State {
         let Some(last) = self.doc.shapes().last() else { return false };
         let width = (last.width + delta).clamp(MIN_WIDTH, MAX_WIDTH);
         self.doc.set_last_width(width)
+    }
+
+    /// Puts a finished shape on the canvas: into the document, or among the
+    /// fading shapes in fading mode.
+    fn add_shape(&mut self, shape: Shape) {
+        if self.fading_mode {
+            self.fading.push(FadingShape { shape, born: Instant::now() });
+        } else {
+            self.doc.add(shape);
+        }
+    }
+
+    /// Fading shapes still visible at `now`, with their opacity.
+    pub fn fading_shapes(&self, now: Instant) -> impl Iterator<Item = (&Shape, f64)> {
+        self.fading
+            .iter()
+            .filter_map(move |f| Some((&f.shape, fade_alpha(now.duration_since(f.born))?)))
+    }
+
+    /// Drops fading shapes that are gone. Returns whether any are left.
+    pub fn expire_fading(&mut self, now: Instant) -> bool {
+        self.fading.retain(|f| fade_alpha(now.duration_since(f.born)).is_some());
+        !self.fading.is_empty()
+    }
+
+    pub fn has_fading(&self) -> bool {
+        !self.fading.is_empty()
+    }
+
+    /// Clears the canvas, fading shapes included.
+    pub fn clear(&mut self) {
+        self.doc.clear();
+        self.fading.clear();
+    }
+
+    fn next_badge_number(&self) -> u32 {
+        let fading_max = self
+            .fading
+            .iter()
+            .filter_map(|f| match f.shape.kind {
+                ShapeKind::Badge { number, .. } => Some(number),
+                _ => None,
+            })
+            .max();
+        self.doc.next_badge_number().max(fading_max.map_or(1, |n| n + 1))
     }
 
     /// Whether the background hides the screen completely.
@@ -135,11 +202,11 @@ impl State {
             Tool::Badge => {
                 let kind = ShapeKind::Badge {
                     center: p,
-                    number: self.doc.next_badge_number(),
+                    number: self.next_badge_number(),
                     radius: badge_radius_for_width(self.width),
                 };
                 let badge = self.shape(kind, false);
-                self.doc.add(badge);
+                self.add_shape(badge);
             }
             tool => {
                 if tool == Tool::Eraser {
@@ -184,7 +251,7 @@ impl State {
         let tiny = drag.tool.is_two_point() && drag.start.distance(drag.current) < 2.0;
         if !tiny {
             if let Some(shape) = self.preview_of(drag) {
-                self.doc.add(shape);
+                self.add_shape(shape);
             }
         }
     }
@@ -219,7 +286,7 @@ impl State {
         if let Some(shape) = self.text_preview() {
             self.text = None;
             if matches!(&shape.kind, ShapeKind::Text { text, .. } if !text.trim().is_empty()) {
-                self.doc.add(shape);
+                self.add_shape(shape);
             }
         }
     }
@@ -277,6 +344,43 @@ mod tests {
         assert_eq!(s.doc.shapes()[0].width, MAX_WIDTH);
         assert!(!s.resize_last(2.0));
         assert_eq!(s.width, 4.0, "the tool width is untouched");
+    }
+
+    #[test]
+    fn fade_alpha_holds_then_fades() {
+        assert_eq!(fade_alpha(Duration::ZERO), Some(1.0));
+        assert_eq!(fade_alpha(FADE_HOLD), Some(1.0));
+        let half = fade_alpha(FADE_HOLD + FADE_OUT / 2).unwrap();
+        assert!((half - 0.5).abs() < 1e-9);
+        assert_eq!(fade_alpha(FADE_HOLD + FADE_OUT), None);
+    }
+
+    #[test]
+    fn fading_mode_keeps_shapes_out_of_the_document() {
+        let mut s = State { fading_mode: true, ..State::default() };
+        s.press(Point::new(0.0, 0.0), false, false);
+        s.release();
+        assert!(s.doc.shapes().is_empty());
+        let now = Instant::now();
+        assert_eq!(s.fading_shapes(now).count(), 1);
+        assert!(s.expire_fading(now));
+        assert!(!s.expire_fading(now + FADE_HOLD + FADE_OUT));
+        assert!(!s.has_fading());
+    }
+
+    #[test]
+    fn fading_badges_keep_counting() {
+        let mut s = State { tool: Tool::Badge, fading_mode: true, ..State::default() };
+        s.press(Point::new(0.0, 0.0), false, false);
+        s.press(Point::new(40.0, 0.0), false, false);
+        let numbers: Vec<u32> = s
+            .fading_shapes(Instant::now())
+            .filter_map(|(shape, _)| match shape.kind {
+                ShapeKind::Badge { number, .. } => Some(number),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(numbers, [1, 2]);
     }
 
     #[test]

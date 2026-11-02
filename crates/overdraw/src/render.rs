@@ -102,6 +102,15 @@ pub fn draw_shape(cr: &Context, shape: &Shape) {
     }
 }
 
+/// Draws a shape at reduced opacity as a whole, so overlapping parts don't show through.
+pub fn draw_shape_faded(cr: &Context, shape: &Shape, alpha: f64) {
+    cr.push_group();
+    draw_shape(cr, shape);
+    if cr.pop_group_to_source().is_ok() {
+        let _ = cr.paint_with_alpha(alpha);
+    }
+}
+
 /// Draws `shapes` over a screen capture. `width` × `height` is the logical size the
 /// shapes were drawn at; the capture may be larger on a HiDPI screen.
 pub fn compose(

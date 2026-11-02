@@ -64,6 +64,9 @@ Text: click with the Text tool and type; Enter or Esc finishes.
 
 The palette can be dragged by the ⠿ grip on its left.
 
+With the fading button on the palette pressed, new drawing stays for 1.5 s and then
+fades away, like a laser pointer. Fading shapes are not part of undo/redo.
+
 The click-through button on the palette keeps the drawing on screen but lets the
 mouse reach the windows under it, e.g. to switch slides. The palette keeps working;
 press the button again to go back to drawing. Meanwhile the background is drawn at

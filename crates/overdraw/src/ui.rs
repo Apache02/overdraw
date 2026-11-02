@@ -3,7 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gtk::gdk::{self, keys::constants as key, EventMask, ModifierType};
 use gtk::glib::{self, Propagation};
@@ -27,6 +27,8 @@ pub struct Ui {
     palette_placed: Cell<bool>,
     /// Smooth-scroll distance not yet turned into a width step.
     scroll_rest: Cell<f64>,
+    /// Whether the timer that animates fading shapes is running.
+    fade_timer: Cell<bool>,
 }
 
 fn tool_label(tool: Tool) -> (&'static str, &'static str) {
@@ -62,6 +64,9 @@ fn tool_icon_svg(tool: Tool) -> &'static str {
 
 const SCREENSHOT_ICON_SVG: &str = include_str!("../../../data/icons/screenshot.svg");
 const PASS_THROUGH_ICON_SVG: &str = include_str!("../../../data/icons/pass-through.svg");
+const FADE_ICON_SVG: &str = include_str!("../../../data/icons/fade.svg");
+/// Redraw interval while fading shapes are on screen.
+const FADE_FRAME: Duration = Duration::from_millis(33);
 /// Time for the compositor to take the hidden canvas off the screen before capturing.
 const SCREENSHOT_DELAY: Duration = Duration::from_millis(300);
 
@@ -308,6 +313,11 @@ impl Ui {
 
         row.pack_start(&gtk::Separator::new(gtk::Orientation::Vertical), false, false, 6);
 
+        let fading = gtk::ToggleButton::new();
+        set_icon(&fading, FADE_ICON_SVG, "≈");
+        fading.set_tooltip_text(Some("Fading: new drawing disappears after a moment"));
+        row.pack_start(&fading, false, false, 0);
+
         let pass_through = gtk::ToggleButton::new();
         set_icon(&pass_through, PASS_THROUGH_ICON_SVG, "⇱");
         pass_through.set_tooltip_text(Some("Click through: use the windows under the drawing"));
@@ -331,20 +341,29 @@ impl Ui {
             width_scale,
             palette_placed: Cell::new(false),
             scroll_rest: Cell::new(0.0),
+            fade_timer: Cell::new(false),
         });
         ui.width_scale.set_value(ui.state.borrow().width);
-        Ui::connect(&ui, &grip, &pass_through, &screenshot);
+        Ui::connect(&ui, &grip, &fading, &pass_through, &screenshot);
         ui
     }
 
     fn connect(
         ui: &Rc<Ui>,
         grip: &gtk::EventBox,
+        fading: &gtk::ToggleButton,
         pass_through: &gtk::ToggleButton,
         screenshot: &gtk::Button,
     ) {
         let u = ui.clone();
         screenshot.connect_clicked(move |_| u.take_screenshot());
+
+        let u = ui.clone();
+        fading.connect_toggled(move |b| {
+            let mut s = u.state.borrow_mut();
+            s.commit_text();
+            s.fading_mode = b.is_active();
+        });
 
         let u = ui.clone();
         pass_through.connect_toggled(move |b| u.set_pass_through(b.is_active()));
@@ -359,6 +378,7 @@ impl Ui {
         let u = ui.clone();
         ui.area.connect_draw(move |_, cr| {
             u.draw(cr);
+            u.animate_fading();
             Propagation::Stop
         });
 
@@ -463,12 +483,35 @@ impl Ui {
         for shape in s.doc.shapes() {
             render::draw_shape(cr, shape);
         }
+        for (shape, alpha) in s.fading_shapes(Instant::now()) {
+            render::draw_shape_faded(cr, shape, alpha);
+        }
         if let Some(shape) = s.preview() {
             render::draw_shape(cr, &shape);
         }
         if let Some(shape) = s.text_preview() {
             render::draw_text_edit(cr, &shape);
         }
+    }
+
+    /// Keeps redrawing while fading shapes are on screen. Started from the draw
+    /// handler, so any way a fading shape gets added sets it going.
+    fn animate_fading(self: &Rc<Self>) {
+        if self.fade_timer.get() || !self.state.borrow().has_fading() {
+            return;
+        }
+        self.fade_timer.set(true);
+        let u = self.clone();
+        glib::timeout_add_local(FADE_FRAME, move || {
+            let left = u.state.borrow_mut().expire_fading(Instant::now());
+            u.area.queue_draw();
+            if left {
+                glib::ControlFlow::Continue
+            } else {
+                u.fade_timer.set(false);
+                glib::ControlFlow::Break
+            }
+        });
     }
 
     /// With an empty input shape the canvas gets no mouse events, so clicks reach
@@ -674,7 +717,7 @@ impl Ui {
             Some('[') => self.width_scale.set_value(self.width_scale.value() - WIDTH_STEP),
             Some(']') => self.width_scale.set_value(self.width_scale.value() + WIDTH_STEP),
             Some('c') => {
-                self.state.borrow_mut().doc.clear();
+                self.state.borrow_mut().clear();
                 self.area.queue_draw();
             }
             Some('s') => self.take_screenshot(),
@@ -798,7 +841,7 @@ impl Ui {
         draw.connect_activate(move |_| u.toggle());
         let u = ui.clone();
         clear.connect_activate(move |_| {
-            u.state.borrow_mut().doc.clear();
+            u.state.borrow_mut().clear();
             u.area.queue_draw();
         });
         let about_dialog = about_dialog();
