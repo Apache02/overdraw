@@ -66,7 +66,8 @@ The palette can be dragged by the ⠿ grip on its left.
 
 The click-through button on the palette keeps the drawing on screen but lets the
 mouse reach the windows under it, e.g. to switch slides. The palette keeps working;
-press the button again to go back to drawing.
+press the button again to go back to drawing. Meanwhile the background is drawn at
+half its opacity (Solid becomes 50%), so the windows you click stay visible.
 
 While the canvas is shown the screen under it is dimmed (black at 30% by default).
 Under **Background** in the tray icon's menu pick black or white and the opacity,

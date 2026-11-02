@@ -102,7 +102,17 @@ impl State {
 
     /// Whether the background hides the screen completely.
     pub fn background_is_solid(&self) -> bool {
-        self.background_opacity >= 1.0
+        self.shown_background_opacity() >= 1.0
+    }
+
+    /// Background opacity as drawn. Click-through halves it so the windows being
+    /// clicked stay visible, without changing the chosen setting.
+    pub fn shown_background_opacity(&self) -> f64 {
+        if self.pass_through {
+            self.background_opacity / 2.0
+        } else {
+            self.background_opacity
+        }
     }
 
     pub fn is_dragging(&self) -> bool {
@@ -267,6 +277,18 @@ mod tests {
         assert_eq!(s.doc.shapes()[0].width, MAX_WIDTH);
         assert!(!s.resize_last(2.0));
         assert_eq!(s.width, 4.0, "the tool width is untouched");
+    }
+
+    #[test]
+    fn pass_through_halves_background_opacity() {
+        let mut s = State { background_opacity: 1.0, ..State::default() };
+        assert!(s.background_is_solid());
+        s.pass_through = true;
+        assert_eq!(s.shown_background_opacity(), 0.5);
+        assert!(!s.background_is_solid());
+        assert_eq!(s.background_opacity, 1.0, "the setting is kept");
+        s.background_opacity = 0.5;
+        assert_eq!(s.shown_background_opacity(), 0.25);
     }
 
     #[test]

@@ -456,7 +456,7 @@ impl Ui {
         let s = self.state.borrow();
         cr.set_operator(gtk::cairo::Operator::Source);
         let level = s.background.level();
-        cr.set_source_rgba(level, level, level, s.background_opacity);
+        cr.set_source_rgba(level, level, level, s.shown_background_opacity());
         let _ = cr.paint();
         cr.set_operator(gtk::cairo::Operator::Over);
 
