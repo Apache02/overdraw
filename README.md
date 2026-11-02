@@ -64,8 +64,9 @@ Text: click with the Text tool and type; Enter or Esc finishes.
 
 The palette can be dragged by the ⠿ grip on its left.
 
-While the canvas is shown the screen under it is dimmed (30% by default).
-Pick the level, or turn it off, under **Dim Screen** in the tray icon's menu.
+While the canvas is shown the screen under it is dimmed (black at 30% by default).
+Under **Background** in the tray icon's menu pick black or white and the opacity,
+or turn it off. **Solid** hides the screen completely, for a blackboard or whiteboard.
 
 ## Layout
 

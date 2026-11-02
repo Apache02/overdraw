@@ -8,9 +8,36 @@ use overdraw_core::{Document, Point, Tool, PALETTE};
 
 pub const MIN_WIDTH: f64 = 1.0;
 pub const MAX_WIDTH: f64 = 30.0;
-/// Opacity of the black layer under the drawing, offered in the tray menu.
-pub const DIM_LEVELS: [f64; 6] = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5];
-pub const DEFAULT_DIM: f64 = 0.3;
+/// Opacity of the background layer under the drawing, offered in the tray menu.
+/// 1.0 hides the screen completely, like a whiteboard or blackboard.
+pub const BACKGROUND_OPACITIES: [f64; 7] = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 1.0];
+pub const DEFAULT_BACKGROUND_OPACITY: f64 = 0.3;
+
+/// Color of the background layer under the drawing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Background {
+    Black,
+    White,
+}
+
+impl Background {
+    pub const ALL: [Background; 2] = [Background::Black, Background::White];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Background::Black => "Black",
+            Background::White => "White",
+        }
+    }
+
+    /// Gray level: 0.0 for black, 1.0 for white.
+    pub fn level(self) -> f64 {
+        match self {
+            Background::Black => 0.0,
+            Background::White => 1.0,
+        }
+    }
+}
 const ERASER_TOLERANCE: f64 = 6.0;
 
 struct Drag {
@@ -32,8 +59,9 @@ pub struct State {
     pub tool: Tool,
     pub color: usize,
     pub width: f64,
-    /// Opacity of the black layer that dims the screen under the drawing.
-    pub dim: f64,
+    pub background: Background,
+    /// Opacity of the background layer that covers the screen under the drawing.
+    pub background_opacity: f64,
     drag: Option<Drag>,
     pub text: Option<TextEdit>,
 }
@@ -45,7 +73,8 @@ impl Default for State {
             tool: Tool::Pen,
             color: 0,
             width: 4.0,
-            dim: DEFAULT_DIM,
+            background: Background::Black,
+            background_opacity: DEFAULT_BACKGROUND_OPACITY,
             drag: None,
             text: None,
         }
@@ -66,6 +95,11 @@ impl State {
         let Some(last) = self.doc.shapes().last() else { return false };
         let width = (last.width + delta).clamp(MIN_WIDTH, MAX_WIDTH);
         self.doc.set_last_width(width)
+    }
+
+    /// Whether the background hides the screen completely.
+    pub fn background_is_solid(&self) -> bool {
+        self.background_opacity >= 1.0
     }
 
     pub fn is_dragging(&self) -> bool {

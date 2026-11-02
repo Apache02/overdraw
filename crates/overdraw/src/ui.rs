@@ -11,7 +11,7 @@ use gtk::prelude::*;
 use overdraw_core::{Point, Tool, PALETTE};
 
 use crate::render;
-use crate::state::{State, DIM_LEVELS, MAX_WIDTH, MIN_WIDTH};
+use crate::state::{Background, State, BACKGROUND_OPACITIES, MAX_WIDTH, MIN_WIDTH};
 
 const WIDTH_STEP: f64 = 2.0;
 
@@ -436,7 +436,8 @@ impl Ui {
     fn draw(&self, cr: &gtk::cairo::Context) {
         let s = self.state.borrow();
         cr.set_operator(gtk::cairo::Operator::Source);
-        cr.set_source_rgba(0.0, 0.0, 0.0, s.dim);
+        let level = s.background.level();
+        cr.set_source_rgba(level, level, level, s.background_opacity);
         let _ = cr.paint();
         cr.set_operator(gtk::cairo::Operator::Over);
 
@@ -479,16 +480,33 @@ impl Ui {
     }
 
     /// Captures the screen under the canvas with the drawing on top (without the
-    /// dimming), saves it to Pictures and copies it to the clipboard.
+    /// translucent background), copies it to the clipboard and asks where to save it.
+    /// With a solid background the drawing is put on that background instead.
     fn take_screenshot(self: &Rc<Self>) {
         let Some(win) = self.overlay.window().filter(|_| self.is_shown()) else { return };
-        {
+        let solid = {
             let mut s = self.state.borrow_mut();
             s.cancel_drag();
             s.commit_text();
-        }
+            s.background_is_solid().then_some(s.background)
+        };
         let (_, x, y) = win.origin();
         let (w, h) = (win.width(), win.height());
+        if let Some(background) = solid {
+            let byte = (background.level() * 255.0) as u32;
+            let rgb = gtk::gdk_pixbuf::Colorspace::Rgb;
+            let shot = gtk::gdk_pixbuf::Pixbuf::new(rgb, false, 8, w, h)
+                .and_then(|bg| {
+                    bg.fill(byte << 24 | byte << 16 | byte << 8 | 0xff);
+                    render::compose(&bg, w, h, self.state.borrow().doc.shapes())
+                })
+                .and_then(|s| gdk::pixbuf_get_from_surface(&s, 0, 0, s.width(), s.height()));
+            match shot {
+                Some(pixbuf) => self.save_screenshot(&pixbuf),
+                None => eprintln!("overdraw: can't render the screenshot"),
+            }
+            return;
+        }
         // Both windows are hidden so the capture shows only what is under them.
         self.palette.hide();
         self.overlay.hide();
@@ -672,25 +690,52 @@ impl Ui {
         }
     }
 
-    fn dim_menu(ui: &Rc<Ui>) -> gtk::Menu {
+    /// Background color, then background opacity, as two radio groups.
+    fn background_menu(ui: &Rc<Ui>) -> gtk::Menu {
         let menu = gtk::Menu::new();
-        let current = ui.state.borrow().dim;
+        let (current_color, current_opacity) = {
+            let s = ui.state.borrow();
+            (s.background, s.background_opacity)
+        };
+
         let mut first: Option<gtk::RadioMenuItem> = None;
-        for level in DIM_LEVELS {
-            let label = if level == 0.0 {
+        for color in Background::ALL {
+            let item = gtk::RadioMenuItem::with_label(color.label());
+            if let Some(f) = &first {
+                item.join_group(Some(f));
+            }
+            item.set_active(color == current_color);
+            let u = ui.clone();
+            item.connect_toggled(move |i| {
+                if i.is_active() {
+                    u.state.borrow_mut().background = color;
+                    u.area.queue_draw();
+                }
+            });
+            menu.append(&item);
+            first.get_or_insert(item);
+        }
+
+        menu.append(&gtk::SeparatorMenuItem::new());
+
+        let mut first: Option<gtk::RadioMenuItem> = None;
+        for opacity in BACKGROUND_OPACITIES {
+            let label = if opacity == 0.0 {
                 "Off".to_string()
+            } else if opacity >= 1.0 {
+                "Solid".to_string()
             } else {
-                format!("{}%", (level * 100.0).round())
+                format!("{}%", (opacity * 100.0).round())
             };
             let item = gtk::RadioMenuItem::with_label(&label);
             if let Some(f) = &first {
                 item.join_group(Some(f));
             }
-            item.set_active(level == current);
+            item.set_active(opacity == current_opacity);
             let u = ui.clone();
             item.connect_toggled(move |i| {
                 if i.is_active() {
-                    u.state.borrow_mut().dim = level;
+                    u.state.borrow_mut().background_opacity = opacity;
                     u.area.queue_draw();
                 }
             });
@@ -704,13 +749,13 @@ impl Ui {
         let menu = gtk::Menu::new();
         let draw = gtk::MenuItem::with_label("Draw on Screen");
         let clear = gtk::MenuItem::with_label("Clear");
-        let dim = gtk::MenuItem::with_label("Dim Screen");
+        let background = gtk::MenuItem::with_label("Background");
         let about = gtk::MenuItem::with_label("About…");
         let quit = gtk::MenuItem::with_label("Quit");
-        dim.set_submenu(Some(&Ui::dim_menu(ui)));
+        background.set_submenu(Some(&Ui::background_menu(ui)));
         menu.append(&draw);
         menu.append(&clear);
-        menu.append(&dim);
+        menu.append(&background);
         menu.append(&gtk::SeparatorMenuItem::new());
         menu.append(&about);
         menu.append(&quit);
