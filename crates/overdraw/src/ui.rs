@@ -61,6 +61,7 @@ fn tool_icon_svg(tool: Tool) -> &'static str {
 }
 
 const SCREENSHOT_ICON_SVG: &str = include_str!("../../../data/icons/screenshot.svg");
+const PASS_THROUGH_ICON_SVG: &str = include_str!("../../../data/icons/pass-through.svg");
 /// Time for the compositor to take the hidden canvas off the screen before capturing.
 const SCREENSHOT_DELAY: Duration = Duration::from_millis(300);
 
@@ -72,6 +73,18 @@ fn palette_icon(svg: &str) -> Option<gtk::gdk_pixbuf::Pixbuf> {
         .replace("\"white\"", "\"#1c1c1e\"")
         .replace("\"black\"", "\"#ffffff\"");
     svg_pixbuf(&svg, TOOL_ICON_SIZE)
+}
+
+/// Puts a palette icon on a button, or `fallback` text if the icon can't be loaded.
+fn set_icon(button: &(impl IsA<gtk::Button> + IsA<gtk::Widget>), svg: &str, fallback: &str) {
+    match palette_icon(svg) {
+        Some(pixbuf) => {
+            button.set_image(Some(&gtk::Image::from_pixbuf(Some(&pixbuf))));
+            button.set_always_show_image(true);
+        }
+        None => button.set_label(fallback),
+    }
+    button.set_can_focus(false);
 }
 
 const APP_ICON_SVG: &str = include_str!("../../../data/icons/overdraw-rs.svg");
@@ -295,15 +308,13 @@ impl Ui {
 
         row.pack_start(&gtk::Separator::new(gtk::Orientation::Vertical), false, false, 6);
 
+        let pass_through = gtk::ToggleButton::new();
+        set_icon(&pass_through, PASS_THROUGH_ICON_SVG, "⇱");
+        pass_through.set_tooltip_text(Some("Click through: use the windows under the drawing"));
+        row.pack_start(&pass_through, false, false, 0);
+
         let screenshot = gtk::Button::new();
-        match palette_icon(SCREENSHOT_ICON_SVG) {
-            Some(pixbuf) => {
-                screenshot.set_image(Some(&gtk::Image::from_pixbuf(Some(&pixbuf))));
-                screenshot.set_always_show_image(true);
-            }
-            None => screenshot.set_label("📷"),
-        }
-        screenshot.set_can_focus(false);
+        set_icon(&screenshot, SCREENSHOT_ICON_SVG, "📷");
         screenshot.set_tooltip_text(Some("Screenshot with drawing (S)"));
         row.pack_start(&screenshot, false, false, 0);
 
@@ -322,13 +333,21 @@ impl Ui {
             scroll_rest: Cell::new(0.0),
         });
         ui.width_scale.set_value(ui.state.borrow().width);
-        Ui::connect(&ui, &grip, &screenshot);
+        Ui::connect(&ui, &grip, &pass_through, &screenshot);
         ui
     }
 
-    fn connect(ui: &Rc<Ui>, grip: &gtk::EventBox, screenshot: &gtk::Button) {
+    fn connect(
+        ui: &Rc<Ui>,
+        grip: &gtk::EventBox,
+        pass_through: &gtk::ToggleButton,
+        screenshot: &gtk::Button,
+    ) {
         let u = ui.clone();
         screenshot.connect_clicked(move |_| u.take_screenshot());
+
+        let u = ui.clone();
+        pass_through.connect_toggled(move |b| u.set_pass_through(b.is_active()));
 
         ui.overlay.connect_realize(|w| {
             let cursor = gdk::Cursor::for_display(&w.display(), gdk::CursorType::Crosshair);
@@ -450,6 +469,20 @@ impl Ui {
         if let Some(shape) = s.text_preview() {
             render::draw_text_edit(cr, &shape);
         }
+    }
+
+    /// With an empty input shape the canvas gets no mouse events, so clicks reach
+    /// the windows under it. The palette is a separate window and keeps working.
+    fn set_pass_through(&self, on: bool) {
+        {
+            let mut s = self.state.borrow_mut();
+            s.cancel_drag();
+            s.commit_text();
+            s.pass_through = on;
+        }
+        let empty = gtk::cairo::Region::create();
+        self.overlay.input_shape_combine_region(on.then_some(&empty));
+        self.area.queue_draw();
     }
 
     /// Scrolling up widens the tool, with Ctrl it widens the last shape instead.

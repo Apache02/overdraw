@@ -62,6 +62,8 @@ pub struct State {
     pub background: Background,
     /// Opacity of the background layer that covers the screen under the drawing.
     pub background_opacity: f64,
+    /// Mouse clicks go through the canvas to the windows under it; the drawing stays.
+    pub pass_through: bool,
     drag: Option<Drag>,
     pub text: Option<TextEdit>,
 }
@@ -75,6 +77,7 @@ impl Default for State {
             width: 4.0,
             background: Background::Black,
             background_opacity: DEFAULT_BACKGROUND_OPACITY,
+            pass_through: false,
             drag: None,
             text: None,
         }
